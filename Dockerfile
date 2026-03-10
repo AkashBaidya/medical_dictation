@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# ── Build stage ──────────────────────────────────────────────────────────────
+# ── Build stage ───────────────────────────────────────────────────────────────
 FROM python:3.11-slim AS builder
 
 # Install uv
@@ -7,41 +7,38 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 WORKDIR /app
 
-# Copy dependency manifests first to leverage Docker layer cache
-COPY pyproject.toml .
+# Copy manifests first — Docker cache skips reinstall if they haven't changed
+COPY pyproject.toml uv.lock README.md ./
 COPY src/ src/
 
-# Install dependencies into a virtual environment inside the image.
-# --no-cache keeps the image lean; --compile-bytecode speeds up startup.
-RUN uv sync --no-cache --compile-bytecode
+# Install only runtime dependencies (no dev group) into the project venv
+RUN uv sync --frozen --no-cache --compile-bytecode --no-group dev
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM python:3.11-slim AS runtime
 
-# ffmpeg is required by Whisper to decode MP3 and other audio formats
+# ffmpeg is required by Whisper to decode audio files
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ffmpeg && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy the virtual environment and application source from the builder
+# Copy the virtual environment and source from the builder
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/src /app/src
 
-# Make the venv's binaries available on PATH
+# Put the venv on PATH
 ENV PATH="/app/.venv/bin:$PATH"
-# Whisper downloads model weights to this directory; mounting a volume here
-# avoids re-downloading on every container start.
-ENV WHISPER_CACHE_DIR="/app/.cache/whisper"
 
-# Create cache dir and ensure it's writable
+# Whisper respects XDG_CACHE_HOME for model weight storage.
+# Mount a volume here to avoid re-downloading on every container start:
+#   docker run -v whisper-cache:/app/.cache ...
+ENV XDG_CACHE_HOME="/app/.cache"
 RUN mkdir -p /app/.cache/whisper
 
-# The GROQ_API_KEY must be supplied at runtime via --env or an env file.
-# We deliberately do NOT bake credentials into the image.
+# Groq API key must be supplied at runtime — never baked into the image
 ENV GROQ_API_KEY=""
 
-# Default entrypoint — users pass arguments after `docker run <image>`
 ENTRYPOINT ["medical-dictation"]
 CMD ["--help"]
